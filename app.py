@@ -435,6 +435,9 @@ def consolidar_facturas_para_excel(todas_facturas):
             fila = {
                 "No. Factura": numero_factura,
                 "Hoja Origen": factura["nombre_hoja"],
+                "Archivo Origen": factura.get(
+                    "archivo_origen", ""
+                ),  # NUEVO: origen del archivo
                 "DESPACHO": "MIDESPACHO",  # Valor fijo para todos los conceptos
                 "RFC": concepto.get("RFC", ""),
                 "CLIENTE": concepto.get("CLIENTE", ""),
@@ -461,6 +464,221 @@ def consolidar_facturas_para_excel(todas_facturas):
         numero_factura += 1
 
     return pd.DataFrame(filas_consolidadas)
+
+
+def procesar_multiples_archivos_excel(archivos_subidos):
+    """Procesa múltiples archivos Excel y consolida todas las facturas"""
+    todas_facturas_consolidadas = []
+    resumenes_archivos = {}
+
+    for archivo_subido in archivos_subidos:
+        datos_excel = None
+        ruta_archivo_temp = None
+
+        try:
+            # Guardar archivo subido en ubicación temporal
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=".xlsx"
+            ) as archivo_temp:
+                archivo_temp.write(archivo_subido.getvalue())
+                ruta_archivo_temp = archivo_temp.name
+
+            # Cargar el archivo Excel
+            datos_excel = cargar_archivo_excel(ruta_archivo_temp)
+
+            if datos_excel is not None:
+                # Extraer facturas de todas las hojas
+                facturas_archivo, resumenes_hojas = extraer_todas_facturas(datos_excel)
+
+                # Agregar información del archivo origen a cada factura
+                for factura in facturas_archivo:
+                    factura["archivo_origen"] = archivo_subido.name
+
+                # Agregar facturas al consolidado total
+                todas_facturas_consolidadas.extend(facturas_archivo)
+
+                # Guardar resumen del archivo
+                resumenes_archivos[archivo_subido.name] = {
+                    "cantidad_facturas": len(facturas_archivo),
+                    "resumenes_hojas": resumenes_hojas,
+                    "procesado_correctamente": True,
+                }
+
+                st.success(
+                    f"✅ {archivo_subido.name}: {len(facturas_archivo)} facturas procesadas"
+                )
+            else:
+                resumenes_archivos[archivo_subido.name] = {
+                    "cantidad_facturas": 0,
+                    "error": "No se pudo cargar el archivo",
+                    "procesado_correctamente": False,
+                }
+
+        except Exception as e:
+            st.error(f"❌ Error procesando {archivo_subido.name}: {str(e)}")
+            resumenes_archivos[archivo_subido.name] = {
+                "cantidad_facturas": 0,
+                "error": str(e),
+                "procesado_correctamente": False,
+            }
+
+        finally:
+            # Limpiar recursos
+            if datos_excel is not None:
+                try:
+                    datos_excel.close()
+                except:
+                    pass
+
+            if ruta_archivo_temp and os.path.exists(ruta_archivo_temp):
+                try:
+                    os.unlink(ruta_archivo_temp)
+                except:
+                    pass
+
+    return todas_facturas_consolidadas, resumenes_archivos
+
+
+def mostrar_resumen_consolidado(todas_facturas_consolidadas, resumenes_archivos):
+    """Muestra el resumen consolidado de todos los archivos procesados"""
+    if not todas_facturas_consolidadas:
+        st.warning("📋 No se encontraron facturas en los archivos procesados.")
+        return
+
+    st.subheader("📊 Resumen Consolidado de Todos los Archivos")
+
+    # Métricas generales
+    total_facturas = len(todas_facturas_consolidadas)
+    total_archivos = len(resumenes_archivos)
+    archivos_exitosos = sum(
+        1
+        for r in resumenes_archivos.values()
+        if r.get("procesado_correctamente", False)
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("📁 Archivos Procesados", f"{archivos_exitosos}/{total_archivos}")
+    with col2:
+        st.metric("🧾 Total Facturas", total_facturas)
+    with col3:
+        # Contar conceptos totales
+        total_conceptos = sum(
+            len(factura["conceptos"]) for factura in todas_facturas_consolidadas
+        )
+        st.metric("📋 Total Conceptos", total_conceptos)
+    with col4:
+        # Contar archivos únicos
+        archivos_unicos = len(
+            set(
+                factura.get("archivo_origen", "")
+                for factura in todas_facturas_consolidadas
+            )
+        )
+        st.metric("📄 Archivos Únicos", archivos_unicos)
+
+    # Resumen por archivo
+    st.subheader("📋 Detalle por Archivo")
+    datos_resumen = []
+
+    for nombre_archivo, resumen in resumenes_archivos.items():
+        if resumen.get("procesado_correctamente", False):
+            # Contar hojas únicas para este archivo
+            hojas_archivo = len(resumen.get("resumenes_hojas", {}))
+
+            datos_resumen.append(
+                {
+                    "Archivo": nombre_archivo,
+                    "Estado": "✅ Éxito",
+                    "Facturas": resumen["cantidad_facturas"],
+                    "Hojas": hojas_archivo,
+                }
+            )
+        else:
+            datos_resumen.append(
+                {
+                    "Archivo": nombre_archivo,
+                    "Estado": "❌ Error",
+                    "Facturas": 0,
+                    "Hojas": 0,
+                }
+            )
+
+    df_resumen = pd.DataFrame(datos_resumen)
+    st.dataframe(df_resumen, use_container_width=True)
+
+    # Mostrar el Excel consolidado final
+    st.markdown("---")
+    mostrar_excel_consolidado(todas_facturas_consolidadas, {})
+
+    # NUEVO: Mostrar facturas detalladas si el usuario quiere
+    st.markdown("---")
+    mostrar_facturas_detalladas_consolidadas(todas_facturas_consolidadas)
+
+
+def mostrar_facturas_detalladas_consolidadas(todas_facturas_consolidadas):
+    """Muestra las facturas detalladas de todos los archivos consolidados"""
+    if not todas_facturas_consolidadas:
+        return
+
+    with st.expander(
+        "📋 Ver Facturas Detalladas de Todos los Archivos", expanded=False
+    ):
+        # Agrupar facturas por archivo origen
+        facturas_por_archivo = {}
+        for factura in todas_facturas_consolidadas:
+            archivo_origen = factura.get("archivo_origen", "Archivo Desconocido")
+            if archivo_origen not in facturas_por_archivo:
+                facturas_por_archivo[archivo_origen] = []
+            facturas_por_archivo[archivo_origen].append(factura)
+
+        # Mostrar cada archivo
+        for nombre_archivo, facturas_archivo in facturas_por_archivo.items():
+            st.subheader(f"📁 Archivo: {nombre_archivo}")
+            st.write(f"**Facturas en este archivo:** {len(facturas_archivo)}")
+
+            # Agrupar por hoja dentro del archivo
+            facturas_por_hoja = {}
+            for factura in facturas_archivo:
+                nombre_hoja = factura["nombre_hoja"]
+                if nombre_hoja not in facturas_por_hoja:
+                    facturas_por_hoja[nombre_hoja] = []
+                facturas_por_hoja[nombre_hoja].append(factura)
+
+            # Mostrar cada hoja dentro del archivo
+            for nombre_hoja, facturas_hoja in facturas_por_hoja.items():
+                with st.expander(
+                    f"📊 Hoja: {nombre_hoja} ({len(facturas_hoja)} facturas)",
+                    expanded=False,
+                ):
+                    # Información del cliente (del primer concepto de la primera factura)
+                    if facturas_hoja and facturas_hoja[0]["conceptos"]:
+                        primer_concepto = facturas_hoja[0]["conceptos"][0]
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(
+                                f"**RFC:** {primer_concepto.get('RFC', 'No encontrado')}"
+                            )
+                        with col2:
+                            st.write(
+                                f"**Cliente:** {primer_concepto.get('CLIENTE', 'No encontrado')}"
+                            )
+
+                    # Mostrar cada factura
+                    for i, factura in enumerate(facturas_hoja, 1):
+                        st.write(f"**🧾 Factura #{i} (Fila {factura['fila_rfc']})**")
+                        st.write(f"Conceptos: {factura['total_conceptos']} elementos")
+
+                        if factura["conceptos"]:
+                            # Mostrar conceptos en tabla
+                            df_conceptos = pd.DataFrame(factura["conceptos"])
+                            st.dataframe(df_conceptos, use_container_width=True)
+
+                        if i < len(facturas_hoja):
+                            st.markdown("---")
+
+            st.markdown("---")
 
 
 def cargar_template_sat():
@@ -585,6 +803,10 @@ def obtener_mapeo_columnas_template(df, fila_titulos):
                 mapeo["IVA"] = i
             elif "TOTAL" in titulo_str:
                 mapeo["TOTAL"] = i
+            elif "ARCHIVO" in titulo_str and "ORIGEN" in titulo_str:
+                mapeo["Archivo Origen"] = i
+            elif "HOJA" in titulo_str and "ORIGEN" in titulo_str:
+                mapeo["Hoja Origen"] = i
 
     return mapeo
 
@@ -1014,19 +1236,26 @@ def mostrar_datos_excel(archivo_excel, nombre_archivo):
     if archivo_excel is None:
         return
 
-    nombres_hojas = archivo_excel.sheet_names
+    try:
+        nombres_hojas = archivo_excel.sheet_names
 
-    # Parsear todas las hojas a la vez
-    st.subheader(f"📊 Facturas Parseadas de todas las hojas en: {nombre_archivo}")
-    todas_facturas, resumenes_hojas = extraer_todas_facturas(archivo_excel)
-    mostrar_facturas(todas_facturas, resumenes_hojas)
+        # Parsear todas las hojas a la vez
+        st.subheader(f"📊 Facturas Parseadas de todas las hojas en: {nombre_archivo}")
+        todas_facturas, resumenes_hojas = extraer_todas_facturas(archivo_excel)
+        mostrar_facturas(todas_facturas, resumenes_hojas)
 
-    # Mostrar resumen total
-    total_facturas = len(todas_facturas)
-    total_hojas = len(nombres_hojas)
-    st.info(
-        f"**Resumen Total:** {total_facturas} facturas procesadas de {total_hojas} hoja(s)"
-    )
+        # Mostrar resumen total
+        total_facturas = len(todas_facturas)
+        total_hojas = len(nombres_hojas)
+        st.info(
+            f"**Resumen Total:** {total_facturas} facturas procesadas de {total_hojas} hoja(s)"
+        )
+    finally:
+        # IMPORTANTE: Cerrar el objeto ExcelFile para liberar recursos
+        try:
+            archivo_excel.close()
+        except:
+            pass
 
 
 def main():
@@ -1038,52 +1267,58 @@ def main():
     )
 
     st.title("🧾 Analizador de Facturas Healtic Invoices")
-    st.markdown("Sube archivos Excel para parsear facturas de **todas las hojas**")
     st.markdown(
-        "💡 *La aplicación procesa todas las hojas en cada archivo Excel y maneja diferentes clientes por hoja*"
+        "Sube **múltiples archivos Excel** para generar un **Template SAT consolidado**"
+    )
+    st.markdown(
+        "💡 *La aplicación procesa todos los archivos Excel de una vez, extrae facturas de todas las hojas y las consolida en un solo Template SAT*"
     )
     st.markdown("---")
 
     # Sección de subida de archivos
     st.header("📤 Subir Archivos Excel")
     archivos_subidos = st.file_uploader(
-        "Elige archivos Excel",
+        "Elige múltiples archivos Excel",
         type=["xlsx", "xls"],
         accept_multiple_files=True,
-        help="Sube archivos Excel que contengan facturas con CLIENTE en A3 y marcadores RFC. Todas las hojas serán procesadas automáticamente.",
+        help="Sube uno o varios archivos Excel que contengan facturas. Todas las hojas de todos los archivos serán procesadas y consolidadas en un solo Template SAT.",
     )
 
     # Procesando archivos subidos
     if archivos_subidos:
-        st.subheader("Análisis de Archivos Subidos")
+        st.subheader("📊 Procesamiento Consolidado de Archivos")
 
-        pestañas = st.tabs([f"📄 {archivo.name}" for archivo in archivos_subidos])
+        # Mostrar información de archivos a procesar
+        st.info(f"📁 Se procesarán {len(archivos_subidos)} archivo(s) Excel")
 
-        for pestaña, archivo_subido in zip(pestañas, archivos_subidos):
-            with pestaña:
-                try:
-                    # Guardar archivo subido en ubicación temporal
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=".xlsx"
-                    ) as archivo_temp:
-                        archivo_temp.write(archivo_subido.getvalue())
-                        ruta_archivo_temp = archivo_temp.name
+        # Procesar todos los archivos de una vez
+        with st.spinner("🔄 Procesando todos los archivos Excel..."):
+            todas_facturas_consolidadas, resumenes_archivos = (
+                procesar_multiples_archivos_excel(archivos_subidos)
+            )
 
-                    # Cargar y mostrar el archivo
-                    datos_excel = cargar_archivo_excel(ruta_archivo_temp)
+        # Mostrar resultado consolidado
+        if todas_facturas_consolidadas:
+            st.success(
+                f"🎉 ¡Procesamiento completado! Se encontraron {len(todas_facturas_consolidadas)} facturas en total."
+            )
+            mostrar_resumen_consolidado(todas_facturas_consolidadas, resumenes_archivos)
+        else:
+            st.warning(
+                "⚠️ No se encontraron facturas válidas en los archivos procesados."
+            )
 
-                    # Mostrar datos parseados (siempre parsear facturas)
-                    mostrar_datos_excel(datos_excel, archivo_subido.name)
-
-                    # Limpiar archivo temporal
-                    os.unlink(ruta_archivo_temp)
-
-                except Exception as e:
+            # Mostrar detalles de errores si existen
+            st.subheader("📋 Detalle de Errores")
+            for nombre_archivo, resumen in resumenes_archivos.items():
+                if not resumen.get("procesado_correctamente", False):
                     st.error(
-                        f"❌ No se pudo procesar {archivo_subido.name}. Verifica que sea un archivo Excel válido."
+                        f"❌ {nombre_archivo}: {resumen.get('error', 'Error desconocido')}"
                     )
     else:
-        st.info("👆 Sube uno o más archivos Excel con facturas para comenzar")
+        st.info(
+            "👆 Sube uno o más archivos Excel con facturas para generar el Template SAT consolidado"
+        )
 
 
 if __name__ == "__main__":
