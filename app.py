@@ -1031,13 +1031,13 @@ def mostrar_datos_excel(archivo_excel, nombre_archivo):
 
 def main():
     st.set_page_config(
-        page_title="Analizador de Facturas Hanova",
+        page_title="Analizador de Facturas Healtic Invoices",
         page_icon="🧾",
         layout="wide",
         initial_sidebar_state="collapsed",
     )
 
-    st.title("🧾 Analizador de Facturas Hanova")
+    st.title("🧾 Analizador de Facturas Healtic Invoices")
     st.markdown("Sube archivos Excel para parsear facturas de **todas las hojas**")
     st.markdown(
         "💡 *La aplicación procesa todas las hojas en cada archivo Excel y maneja diferentes clientes por hoja*"
